@@ -30,7 +30,7 @@ library(ggplot2)
 
 # Load the data:
 ```{r}
-data <- load("fransoza_IBD") #main dataset
+data <- load("franzosa_IBD") #main dataset
 genus_names <- read_excel('genus_names.xlsx') #genus names dataset
 mtb_changes <- read_excel('tests.xlsx') #metabolite fluxes from MICOM
 sel_met <- read_excel("selected_met.xlsx") #information on the selected metabolites only
