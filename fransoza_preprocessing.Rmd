@@ -1,0 +1,288 @@
+---
+title: "fransoza_preprocessing"
+output: html_document
+date: "2024-09-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Install required packages (on first use):
+```{r}
+install.packages('readxl')
+install.packages("vegan")
+```
+
+#Load required libraries:
+```{r}
+library(tidyverse)
+library(readxl)
+library(tidyr)
+library(chemometrics)
+library(vegan)
+library(tableone)
+```
+
+# Load the data:
+```{r}
+data <- load("fransoza_IBD") #main dataset
+genus_names <- read_excel('genus_names.xlsx') #genus names dataset
+```
+
+##MICROBE DATA:
+
+#Data manipulation:
+```{r}
+#make row names sample names and remove that row:
+rownames(genera) <- genera[,1]
+genera <- genera[,-1]
+#make column names the genus names:
+colnames(genera) <- genus_names$Genus
+
+#create new column 'Disease Group' which is just IBD or Control:
+for (val in 1:220){
+  if (metadata$Study.Group[val] == "Control"){
+    metadata$Disease.Group[val] <-  "Control"
+  }
+  else {
+    metadata$Disease.Group[val] <- "IBD"
+  }
+}
+```
+
+#Data Sparsity:
+Remove any features where there are greater than 80% sparsity:
+```{r}
+sparsity <- c(rep(0,11721)) #empty vectors
+#calculate the percentage of zeros for each cluster type for all the samples:
+for (i in 1:ncol(genera)) {
+    sparsity[i] <- (sum(genera[, i] == 0)/220)*100
+}
+remove <- which(sparsity > 80)
+genera_alt <- genera[-c(remove)]
+```
+Leaves only now 3960 genera compared to the original 11720. 
+
+#Remove Unknown Family/Genus:
+```{r}
+#make reduced data a dataframe with numbers only:
+genera_alt <- as.data.frame(genera_alt)
+genera_alt[] <- lapply(genera_alt, as.numeric)
+
+#genus name of those to keep are listed in column 4 of genus_names:
+genera_known <- as.vector(genus_names[1:3268,4])
+genera_known <- unlist(genera_known)
+genera_alt <- genera_alt[,c(genera_known)]
+```
+Now 3268 genus are left compared to 3960 previously. Most with genus known, some with family known.
+
+#Find outliers and produce a PCoA:
+
+Scale and Transform the data:
+```{r}
+#CLR transform:
+tran_genera <- clr(genera_alt+0.00001)
+
+#Min-Max Normalisation:
+# Define Min-Max normalization function:
+min_max_norm <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+}
+
+# Apply Min-Max normalization to the dataset:
+genera_norm <- as.data.frame(lapply((tran_genera), min_max_norm))
+#rename row names as sample names:
+rownames(genera_norm) <- metadata[,2]
+```
+
+Calculate Brays-Curtis Distance metric:
+```{r}
+dd <- vegdist(genera_norm, method = "bray")
+pcoa_data <- cmdscale(dd, eig = TRUE)
+pcoa_df <- data.frame(PC1 = c(pcoa_data$points[,1]),
+                      PC2 = c(pcoa_data$points[,2]),
+                      DiseaseGroup = metadata$Disease.Group)
+```
+
+Plot:
+```{r}
+ve <- pcoa_data$eig/sum(pcoa_data$eig)
+#Plot points:
+ggplot(pcoa_df, aes(x = PC1, y = PC2, color = DiseaseGroup, fill = DiseaseGroup)) +
+  #change theme:
+  theme_classic() +
+  #add confidence intervals:
+  stat_ellipse(type = "t",level = 0.90, geom= "polygon", alpha = 0.2, show.legend = FALSE)+
+  geom_point() +
+  #Organize and format figure:
+  xlab(paste0("PCo 1 (",round(ve[1]*100,1),"%)")) +
+  ylab(paste0("PCo 2 (",round(ve[2]*100,1),"%)")) +
+  theme(legend.justification=c(0,0), legend.position=c(0.02,0.02),
+        legend.text = element_text(size = 12),
+        legend.background = element_rect(fill="gray90", size=1, linetype="dotted"),
+        legend.title = element_text(size=13),
+        axis.title=element_text(size=14))+
+    scale_color_discrete(name="Study Group", labels=c("Control (n = 56)", 
+                                                      "IBD (n = 164)"))+
+  scale_fill_discrete(name="Study Group", labels=c("Control (n = 56)", "IBD (n = 164)"))
+
+#Save figure:
+#ggsave(path = "figs", filename = "pcoa_fran.png")
+```
+
+Find outliers and remove them from dataset:
+```{r}
+#identify outliers:
+outliers <- which(pcoa_df$PC2 > 0.2)
+#remove:
+genera_diff <- genera_alt[-c(outliers),]
+metadata_diff <- metadata[-c(outliers),]
+```
+
+PERMANOVA comparison between groups:
+```{r}
+perms <- 1000
+alt <- which((metadata$Disease.Group == "IBD")| (metadata$Disease.Group == "Control"))
+meta_alt <- metadata[c(alt),]
+con_cd <- genera_norm[c(alt),]
+ibd_con <- adonis2(
+con_cd ~ meta_alt$Disease.Group,
+method = "bray", 
+permutations = perms
+)
+pairwise_p <- ibd_con$`Pr(>F)`[1]
+p.adjust(pairwise_p, method = "BH")
+```
+
+
+#Reduce features using Mann-Whitney- u:
+```{r}
+#Obtain indices for each group:
+ibd_index <- which(metadata_diff$Disease.Group == "IBD")
+control_index <- which(metadata_diff$Disease.Group == "Control")
+
+#complete test for each feature:
+man_p <- c(rep(0,3268))
+for (feat in 1:3268){
+  x <- genera_diff[c(ibd_index), feat]
+  y <- genera_diff[c(control_index), feat]
+  man_wit <- wilcox.test(x, y)
+  man_p[feat] <- man_wit$p.value
+}
+
+#adjust for multiple testing:
+man_p_adj <- p.adjust(man_p, method = 'hochberg', n = length(man_p))
+sig_feat <- which(man_p_adj < 0.05)
+#Select only significant features:
+genera_diff <- genera_diff[c(sig_feat)]
+```
+Reduces number of genera from 3268 to 430.
+
+## Extract data:
+```{r}
+#Genera:
+write.csv(genera_diff, "fran_genera.csv", row.names = TRUE)
+#Metadata:
+write.csv(metadata_diff[, c(2,4,5,9,10,11,12,13,14)],"fran_metadata.csv", row.names = TRUE) # only sections of interest
+```
+
+#METABOLITE DATA:
+
+#Data manipulation:
+```{r}
+#make row names sample names and remove that row:
+rownames(mtb) <- mtb[,1]
+mtb <- mtb[,-1]
+```
+
+#Data sparsity:
+Remove any metabolites where there is greater than 80% sparsity:
+```{r}
+sparsity_mtb <- c(rep(0,8849)) #empty vectors
+#calculate the percentage of zeros for each cluster type for all the samples.
+for (i in 1:ncol(mtb)) {
+    sparsity_mtb[i] <- (sum(mtb[, i] == 0)/220)*100
+}
+remove_mtb <- which(sparsity_mtb > 80)
+mtb_alt <- mtb[-c(remove_mtb)]
+```
+Leaves now 8835 metabolites compared to the original 8848.
+
+#Remove Unknown Metabolite Compound/Class:
+```{r}
+#make reduced data a dataframe with numbers only:
+mtb_alt <- as.data.frame(mtb_alt)
+mtb_alt[] <- lapply(mtb_alt, as.numeric)
+
+#make row names the sample name and remove this row:
+rownames(mtb.map) <- mtb.map[,1]
+mtb.map <- mtb.map[,-1]
+
+#remove the metabolites with no compund name or class:
+remove <- which((is.na(mtb.map$HMDB))&(is.na(mtb.map$KEGG))&is.na(mtb.map$Compound.Name)&is.na(mtb.map$Putative.Chemical.Class))
+mtb_alt <- mtb_alt[,c(-remove)]
+```
+Now 3935 metabolites are left compared to 8835 previously. 
+
+#Find outliers:
+Scale and Transform the data:
+```{r}
+#CLR transform:
+tran_mtb <- clr(mtb_alt+ 1)
+
+#z-normalisation:
+mtb_norm <- as.data.frame(scale(tran_mtb))
+rownames(mtb_norm) <- metadata[,2]
+```
+
+Remove same outlier samples as genera data:
+```{r}
+met_diff <- mtb_alt[-c(126,182),]
+metadata_diff <- metadata[-c(126,182),]
+```
+
+#Reduce features using Mann-Whitney- u:
+```{r}
+#obtain indices for each group:
+ibd_index <- which(metadata_diff$Disease.Group == "IBD")
+control_index <- which(metadata_diff$Disease.Group == "Control")
+
+#complete test for each feature:
+man_p <- c(rep(0,3935))
+for (feat in 1:3935){
+  x <- met_diff[c(ibd_index), feat]
+  y <- met_diff[c(control_index), feat]
+  man_wit <- wilcox.test(x, y)
+  man_p[feat] <- man_wit$p.value
+}
+
+#adjust for multiple testing:
+man_p_adj <- p.adjust(man_p, method = 'hochberg', n = length(man_p))
+sig_feat <- which(man_p_adj < 0.05)
+#select significant features only:
+met_diff <- met_diff[c(sig_feat)]
+```
+Reduces from 3935 metabolites to 1343.
+
+#Extract data:
+```{r}
+write.csv(met_diff, "fran_met.csv", row.names = TRUE)
+```
+
+#Analysing Baseline Charactersitics:
+```{r}
+#Compare Categorical variables:
+CreateCatTable(vars = c("mesalamine", "antibiotic", "immunosuppressant", "steroids"), strata = c("Disease.Group"), data = metadata_diff, test = T, addOverall = T)
+
+#Compare Continuous variables (age):
+t_Test <- t.test(Age ~ Disease.Group,
+           data = metadata_diff)
+tapply(metadata_diff$Age, metadata_diff$Disease.Group, summary)
+t_Test$p.value
+
+#Summarize age statistics:
+mean(metadata_imp$Age, na.rm=TRUE)
+sd(metadata_imp$Age, na.rm=TRUE)
+tapply(metadata_imp$Age, metadata_imp$Study.Group, sd, na.rm=TRUE)
+```

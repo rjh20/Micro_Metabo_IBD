@@ -1,0 +1,193 @@
+---
+title: "val_hmp2_preprocessing"
+output: html_document
+date: "2024-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Install required packages (on first use):
+```{r}
+install.packages('readxl')
+```
+
+#Load required libraries:
+```{r}
+library(tidyverse)
+library(readxl)
+library(tableone)
+library(tidyr)
+library(car)
+```
+
+# Load the data:
+```{r}
+data <- load("IBD_hmp2") #validation dataset
+genus_names <- read_excel('hmp_genus_names.xlsx') #genus names for validation data
+```
+
+#Remove paediatric patients:
+```{r}
+#remove patients with age under 18 at consent:
+paed <- which(metadata$consent_age < 18)
+metadata_alt <- metadata[-c(paed),]
+#remove patients with age under 18 at diagnosis:
+paed_diag <- which(metadata_alt$`Age at diagnosis` < 18)
+metadata_alt <- metadata_alt[-c(paed_diag),]
+#remove unnecessary columns:
+metadata_alt <- metadata_alt[,-c(6,7,8,10,20,21,22,23,25,26)]
+```
+
+#Get Baseline sample of each patient only:
+```{r}
+#find the number of patients:
+subjects <- unique(metadata_alt$Subject)
+#create dataframe to store unique samples:
+metadata_uni <- data.frame()
+#for each patient extract a subset of all their samples
+for (sub in 1:length(subjects)){
+  subby <- subset(metadata_alt, Subject == subjects[sub])
+  min_week <- min(subby$week_num) #select the sample from the earliest week
+  uni_sub <- subset(subby, week_num == min_week)
+  metadata_uni <- rbind(metadata_uni,uni_sub) #store to dataframe
+}
+```
+
+#Data manipulation:
+```{r}
+#create copies of genus and metabolite data:
+genera_alt <- genera
+mtb_alt <- mtb
+#make row names sample names and remove that column:
+rownames(genera_alt) <- genera_alt[,1 ]
+genera_alt <- genera_alt[,-1]
+rownames(mtb_alt) <- mtb_alt[,1 ]
+mtb_alt <- mtb_alt[,-1]
+
+#select only data on the baseline samples:
+uni_select <- as.vector(metadata_uni$Sample)
+genera_alt <- genera_alt[uni_select,]
+mtb_alt <- mtb_alt[uni_select,]
+
+#make all data into dataframes and input numeric:
+genera_alt <- as.data.frame(genera_alt)
+genera_alt[] <- lapply(genera_alt, as.numeric)
+mtb_alt <- as.data.frame(mtb_alt)
+mtb_alt[] <- lapply(mtb_alt, as.numeric)
+
+#make the column names the genus names:
+colnames(genera_alt) <- genus_names$`Genus names`
+
+#create new column 'Disease Group' which is just IBD or Control:
+for (val in 1:51){
+  if (metadata_uni$Study.Group[val] == "nonIBD"){
+    metadata_uni$Disease.Group[val] <-  "Control"
+  }
+  else {
+    metadata_uni$Disease.Group[val] <- "IBD"
+  }
+}
+```
+
+#Extract the 74 selected metabolites from the main dataset:
+```{r}
+diff_gen <- as.vector(genus_names[1:74, 3]) #names stored in the third column of genus name dataset
+diff_gen <- unlist(diff_gen)
+genera_diff <- genera_alt[c(diff_gen)]
+```
+
+#Extract the 14 metabolites from the main dataset found in this one:
+```{r}
+#extract name of smaple of metabolites:
+index_mtb <- c(15,17,38,72,127,169,173,221,264,274,280,290,308,493)
+select_mtb <- mtb.map[c(index_mtb),]
+com_sel <- select_mtb$Compound
+
+#extract those compounds from the numerical dataset:
+mtb_imp <- mtb_alt[,c(com_sel)]
+```
+
+#Extract data:
+```{r}
+#Genera:
+write.csv(genera_diff, "hmp_genera.csv", row.names = TRUE)
+write.csv(metadata_uni, "hmp_meta.csv", row.names = TRUE)
+write.csv(mtb_imp, "hmp_metabolites.csv", row.names = TRUE)
+```
+
+#Analysing Baseline Characteristics:
+```{r}
+#Compare categorical variables: 
+CreateCatTable(vars = c("Gender", "Antibiotics", "race"), strata = c("Disease.Group"), data = metadata_uni, test = T, addOverall = T)
+
+#Compare age across the disease groups:
+tapply(metadata_uni$consent_age, metadata_uni$Disease.Group,summary,na.rm=TRUE)
+mean(metadata_uni$consent_age, na.rm=TRUE)
+sd(metadata_uni$consent_age, na.rm=TRUE)
+median(metadata_uni$consent_age, na.rm=TRUE)
+quantile(metadata_uni$consent_age, prob = c(0.25, 0.5, 0.75), na.rm = TRUE)
+t_test <- t.test(consent_age ~ Disease.Group,
+           data = metadata_uni)
+(t_test$p.value)
+```
+
+#Statistical Analysis:
+Compare the abundance of each selected genus between the two groups with a 
+Mann-Whitney Wilcoxon:
+```{r}
+ibd_index <- which(metadata_uni$Disease.Group == "IBD")
+control_index <- which(metadata_uni$Disease.Group == "Control")
+man_p_gen <- c(rep(0,74))
+for (feat in 1:74){
+  x <- genera_diff[c(ibd_index), feat]
+  y <- genera_diff[c(control_index), feat]
+  man_wit <- wilcox.test(x, y)
+  man_p_gen[feat] <- man_wit$p.value
+}
+man_p_gen_adj <- p.adjust(man_p_gen, method = 'hochberg', n = length(man_p_gen))
+man_p_gen_adj
+```
+
+Compare the abundance of each selected metabolite between the two groups with a 
+Mann-Whitney Wilcoxon:
+```{r}
+ibd_index <- which(metadata_uni$Disease.Group == "IBD")
+control_index <- which(metadata_uni$Disease.Group == "Control")
+man_p_mtb <- c(rep(0,14))
+for (feat in 1:14){
+  x <- mtb_imp[c(ibd_index), feat]
+  y <- mtb_imp[c(control_index), feat]
+  man_wit <- wilcox.test(x, y)
+  man_p_mtb[feat] <- man_wit$p.value
+}
+man_p_mtb_adj <- p.adjust(man_p_mtb, method = 'hochberg', n = length(man_p_mtb))
+man_p_mtb_adj
+```
+
+Identify any genus differentially abundant between disease groups in this dataset:
+```{r}
+#remove all genus with greater than 80% sparsity:
+sparsity <- c(rep(0, 9694))
+for (i in 1:ncol(genera_alt)) {
+    sparsity[i] <- (sum(genera_alt[, i] == 0)/51)*100
+}
+remove <- which(sparsity > 80)
+genera_alt <- genera_alt[-c(remove)]
+
+#complete Mann-Whitney Wilcoxon between the two groups:
+ibd_index <- which(metadata_uni$Disease.Group == "IBD")
+control_index <- which(metadata_uni$Disease.Group == "Control")
+man_p <- c(rep(0,2072))
+for (feat in 1:2072){
+  x <- genera_alt[c(ibd_index), feat]
+  y <- genera_alt[c(control_index), feat]
+  man_wit <- wilcox.test(x, y)
+  man_p[feat] <- man_wit$p.value
+}
+man_p_adj <- p.adjust(man_p, method = 'hochberg', n = length(man_p))
+sig_feat <- which(man_p_adj < 0.05)
+man_p
+```
+No significant genus identified. 

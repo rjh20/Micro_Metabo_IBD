@@ -1,0 +1,423 @@
+---
+title: "Visualisations"
+output: html_document
+date: "2024-09-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Install required packages (on first use):
+```{r}
+install.packages('readxl')
+install.packages("vegan")
+install.packages("fmsb")
+```
+
+#Load required libraries:
+```{r}
+library(tidyverse)
+library(readxl)
+library(tidyr)
+library(chemometrics)
+library(vegan)
+library(tableone)
+library(fmsb)
+library(reshape2)
+library(ggplot2)
+```
+
+# Load the data:
+```{r}
+data <- load("fransoza_IBD") #main dataset
+genus_names <- read_excel('genus_names.xlsx') #genus names dataset
+mtb_changes <- read_excel('tests.xlsx') #metabolite fluxes from MICOM
+sel_met <- read_excel("selected_met.xlsx") #information on the selected metabolites only
+met_diff <- read_excel("fran_met.xlsx")
+```
+
+#Compare phyla among groups:
+Sum the abundance of each phyla found for all the genera of each sample:
+```{r}
+#create copy of abundances and store as a dataframe:
+phyla <- as.data.frame(t(genera))
+#count the number of unique phyla names stored in the Phylum column of the genus_names dataset:
+uni_phyla <- unique(genus_names$`Phylum:`)
+phyla <- cbind(phyla, genus_names$`Phylum:`)
+
+#subset each genera by their phyla group and store the sum of their abundance to a new dataframe:
+phy_abun <- data.frame()
+phy_abun <- cbind(c(rep(0,220)))
+for (phy in 1:length(uni_phyla)){
+  sub_phy <- subset(phyla, phyla[,221] == uni_phyla[phy])
+  sam_phy <- c(rep(0,220))
+  for (sam in 1:220){
+    phy_sum <- sum(as.numeric(sub_phy[,sam]))
+    sam_phy[sam] <- phy_sum
+  }
+  phy_abun <- cbind(phy_abun,sam_phy)
+}
+phy_abun <- phy_abun[,-1]
+#make column names the phyla and the row names the samples:
+colnames(phy_abun) <- (uni_phyla)
+rownames(phy_abun) <- metadata$Sample
+
+#save as new file:
+#write.csv(phy_abun, "fran_phyla.csv", row.names = TRUE)
+```
+
+Find the average abundance for each phyla group between samples for each group:
+```{r}
+#make copy to do phyla:
+phyla <- genera
+uni_phyla <- unique(genus_names$`Phylum:`)
+#subset groups:
+ibd_index <- which(metadata$Disease.Group == "IBD")
+control_index <- which(metadata$Disease.Group == "Control")
+phy_ibd <- phyla[c(ibd_index),]
+phy_ibd[] <- lapply(phy_ibd, as.numeric)
+phy_control <- phyla[c(control_index),]
+phy_control[] <- lapply(phy_control, as.numeric)
+
+#find average abundance for each microbe for each group:
+ibd_avg <- c(rep(0,11720))
+con_avg <- c(rep(0,11720))
+for(feat in 1:11720){
+  ibd_avg[feat] <- mean(phy_ibd[,feat])
+  con_avg[feat] <- mean(phy_control[,feat])
+}
+avg_phy <- data.frame()
+avg_phy <- cbind(genus_names$`Phylum:`)
+avg_phy <- cbind(avg_phy,ibd_avg)
+avg_phy <- cbind(avg_phy, con_avg)
+
+#combine same phyla:
+abun_phy_ibd <- c(rep(0,120))
+abun_phy_con <- c(rep(0,120))
+for (phy in 1:length(uni_phyla)){
+  sub_phy <- subset(avg_phy, avg_phy[,1] == uni_phyla[phy])
+  ibd_sub <- sum(as.numeric(sub_phy[,2]))
+  control_sub <- sum(as.numeric(sub_phy[,3]))
+  abun_phy_con[phy] <- control_sub
+  abun_phy_ibd[phy] <- ibd_sub
+}
+
+#store in nice data frame:
+phyla_abun <- data.frame()
+phyla_abun <- cbind(uni_phyla)
+phyla_abun <- cbind(phyla_abun,abun_phy_ibd)
+phyla_abun <- cbind(phyla_abun,abun_phy_con)
+
+#export:
+#write.csv(phyla_abun, "fran_phyla_avg.csv", row.names = TRUE)
+```
+
+Compare statistically which phyla are differentially abundant between the two study groups:
+```{r}
+#phyla data:
+phyla_data <- read_excel("fran_phyla.xlsx")
+phyla_data <- data.frame(phyla_data)
+rownames(phyla_data) <- phyla_data[,1] 
+phyla_data <- phyla_data[,-1]
+
+#stat test to compare:
+ibd_index <- which(metadata$Disease.Group == "IBD")
+control_index <- which(metadata$Disease.Group == "Control")
+phy_p <- c(rep(0,102))
+for (feat in 1:102){
+  x <- phyla_data[c(ibd_index),feat]
+  y <- phyla_data[c(control_index),feat]
+  phy_t <- t.test(x, y)
+  phy_p[feat] <- phy_t$p.value
+}
+phy_p_adj <- p.adjust(phy_p, method = 'hochberg', n = length(phy_p))
+sig_feat <- which(phy_p_adj < 0.05)
+
+```
+The are three phyla statistically significantly differentially abundant between the IBD and control samples: firmicutes, proteobacteria and elusmicrobiota.
+
+Create stacked bar chart visualisation:
+```{r}
+#load and reformat the average abundance dataset:
+phyla_data_avg <- read_excel("fran_phyla_avg.xlsx")
+phyla_data_avg <- data.frame(phyla_data_avg)
+rownames(phyla_data_avg) <- phyla_data_avg[,1] 
+phyla_data_avg <- phyla_data_avg[,-(1)]
+colnames(phyla_data_avg)<- c("IBD (n = 164)", "Control (n = 56)")
+
+#make long for plot:
+library(ggplot2)
+phyla_long <- as.data.frame(phyla_data_avg)%>%
+  rownames_to_column(var = "Phyla") %>%
+  pivot_longer(cols= -Phyla, names_to = "Group", values_to = "Value")
+
+#group together phyla with small abundance and keep the top four other only:
+phyla_want <- c(1,2,3,4,5,6,7,8)
+phyla_sub <- phyla_long[phyla_want,]
+phyla_not <-(phyla_long[-c(phyla_want),])
+#subset into the two disease groups:
+ibd_not <- subset(phyla_not, phyla_not$Group == "IBD (n = 164)")
+con_not <- subset(phyla_not, phyla_not$Group == "Control (n = 56)")
+phyla_sub <- rbind(phyla_sub,c("Other", "IBD (n = 164)", sum(as.numeric(ibd_not$Value))))
+phyla_sub <- rbind(phyla_sub,c("Other", "Control (n = 56)", sum(as.numeric(con_not$Value))))
+#show in order of smallest to largest, with other on the bottom:
+phyla_sub$Phyla <- factor(phyla_sub$Phyla, levels=c('Proteobacteria', 'Actinobacteriota','Bacteroidota', 'Firmicutes', 'Other'))
+phyla_sub$Value <- as.numeric(phyla_sub$Value)
+
+#plot as stacked bar chart:
+ggplot(phyla_sub, aes(fill= Phyla, y=Value, x=Group)) + 
+  geom_bar(position='stack', stat='identity')+
+  theme_minimal() +
+  labs(x='Disease Group', y='Relative Abundance', title='Average Relative Abundance of each
+       Phylum by Disease Status')+
+  theme(plot.title = element_text(hjust = 0.5, size=20, face='bold'),
+        legend.title = element_text(size=15),
+        legend.text = element_text(size=15),
+        axis.text = element_text(size =15),
+        axis.title.x = element_text(size = 18,margin = margin(t = 20)),
+        axis.title.y = element_text(size = 18, margin = margin(r = 20)))
+
+#ggsave(path = "figs", filename = "fran_phyla.png")
+```
+
+#Simpson and Shannon index investigation:
+```{r}
+#subset genera by disease group:
+ibd_index <- which(metadata$Disease.Group == "IBD")
+control_index <- which(metadata$Disease.Group == "Control")
+ibd_df <- genera[c(ibd_index),]
+con_df <- genera[c(control_index),]
+
+#Create new dataframe:
+df <- genera
+df <- cbind(df, rownames(df))
+df <- cbind(df, metadata$Disease.Group)
+#melt the dataframe so correct format:
+df_melt <- melt(df)
+colnames(df_melt) <- c("Sample", "Group", "variable", "value")
+
+alpha_val <- df_melt %>%
+  group_by(Sample) %>%
+  summarize(Shannon = diversity(value, index = "shannon"),
+            Simpson = diversity(value, index = "simpson"),
+            n = sum(value)) %>%
+  pivot_longer(cols = c(Shannon, Simpson),
+               names_to = "metric")
+
+#calculate the alpha diversity metrics:
+alpha_val <- df_melt %>%
+  group_by(Sample) %>%
+  summarize(Shannon = diversity(value, index = "shannon"),
+            Simpson = diversity(value, index = "simpson"),
+            n = sum(value)) %>%
+  pivot_longer(cols = c(Shannon, Simpson),
+               names_to = "metric")
+ 
+alpha_val <- cbind(alpha_val, rep(metadata$Disease.Group,each = 2))
+colnames(alpha_val) <- c("Sample", "n", "metric", "Value", "Disease group")
+#extract them:
+shan <- subset(alpha_val, alpha_val$metric == "Shannon")
+sim <- subset(alpha_val, alpha_val$metric == "Simpson")
+```
+
+Create Shannon visualization:
+```{r}
+ggplot(data = shan, aes(y=Value, x=metric)) + 
+             geom_boxplot(aes(fill=`Disease group`))+
+  xlab(NULL)+
+  theme_minimal()+
+  theme(legend.text = element_text(size = 12),
+        legend.title = element_text(size=13),
+        axis.title=element_text(size=14), 
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 12))
+
+#save plot:
+#ggsave(path = "figs", filename = "shan_alpha.png", height = 5, width = 5)
+```
+
+Create Simpson visualization:
+```{r}
+p <- ggplot(data = sim, aes(y=Value, x=metric)) + 
+  geom_boxplot(aes(fill=`Disease group`)) 
+p <- p + theme_minimal()
+p <- p + theme(legend.text = element_text(size = 15),
+        legend.title = element_text(size=18),
+        axis.title=element_text(size=14), 
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 12),
+        legend.background = element_rect(fill="gray90", size=1))
+p <- p + xlab(NULL)
+p
+
+#save plot:
+#ggsave(path = "figs", filename = "sim_alpha.png", height = 5, width = 5)
+```
+
+
+#Spider web (radar chart) visualisations for performance metrics:
+Fransoza microbe model performances:
+```{r}
+#xgboost model performance data:
+xg_dat <- as.data.frame(matrix(c(0.932, 0.840, 0.883,0.48,0.932), ncol=5))
+colnames(xg_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#add min and max to the plot:
+xg_dat <- rbind(rep(1,5) , rep(0,5) , xg_dat)
+
+#create radar chart:
+xg_rad <- radarchart(xg_dat, axistype = 1, pcol=rgb(0.2,0.5,0.5,0.9), pfcol=rgb(0.2,0.5,0.5,0.5),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#random forest model performance data:
+rf_dat <- as.data.frame(matrix(c(0.914, 0.877, 0.894,0.627,0.914), ncol=5))
+colnames(rf_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#random forest radar chart:
+rf_dat <- rbind(rep(1,5) , rep(0,5) , rf_dat)
+rf_rad <- radarchart(rf_dat, axistype = 1, pcol=rgb(0.8,0.2,0.5,0.9), pfcol= rgb(0.8,0.2,0.5,0.4),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#LASSO model performance data:
+las_dat <- as.data.frame(matrix(c(0.846, 0.878, 0.857,0.640,0.846), ncol=5))
+colnames(las_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#LASSO radar chart:
+las_dat <- rbind(rep(1,5) , rep(0,5) , las_dat)
+las_rad <- radarchart(las_dat, axistype = 1, pcol=rgb(0.7,0.5,0.1,0.9), pfcol= rgb(0.7,0.5,0.1,0.4),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+```
+
+Fransoza metabolite model performances:
+```{r}
+#xgboost model performance:
+xg_dat_mtb <- as.data.frame(matrix(c(0.907, 0.904, 0.905,0.720,0.907), ncol=5))
+colnames(xg_dat_mtb) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#xgboost radar chart:
+xg_dat_mtb <- rbind(rep(1,5) , rep(0,5) , xg_dat_mtb)
+xg_mtb_rad <- radarchart(xg_dat_mtb, axistype = 1, pcol=rgb(0.2,0.5,0.5,0.9), pfcol=rgb(0.2,0.5,0.5,0.5),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#random forest model performance:
+rf_dat_mtb <- as.data.frame(matrix(c(0.901, 0.928, 0.913,0.7783,0.901), ncol=5))
+colnames(rf_dat_mtb) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#random forest radar chart:
+rf_dat_mtb <- rbind(rep(1,5) , rep(0,5) , rf_dat_mtb)
+rf_mtb_rad <- radarchart(rf_dat_mtb, axistype = 1, pcol=rgb(0.8,0.2,0.5,0.9), pfcol= rgb(0.8,0.2,0.5,0.4),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#LASSO model performance:
+las_dat_mtb <- as.data.frame(matrix(c(0.925, 0.903, 0.912,0.693,0.925), ncol=5))
+colnames(las_dat_mtb) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#LASSO radar chart:
+las_dat_mtb <- rbind(rep(1,5) , rep(0,5) , las_dat_mtb)
+las_mtb_rad <- radarchart(las_dat_mtb, axistype = 1, pcol=rgb(0.7,0.5,0.1,0.9), pfcol= rgb(0.7,0.5,0.1,0.4),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+```
+
+Validation model performances:
+```{r}
+#microbe only model:
+mic_dat <- as.data.frame(matrix(c(0.919, 0.739,0.819,0.143,0.919), ncol=5))
+colnames(mic_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#microbe only radar chart:
+mic_dat <- rbind(rep(1,5) , rep(0,5) , mic_dat)
+mic_rad <- radarchart(mic_dat, axistype = 1, pcol=rgb(0.4,0.8,0.5,0.9), pfcol= rgb(0.4,0.8,0.5,0.6),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#metabolite only model:
+mtb_dat <- as.data.frame(matrix(c(0.919, 0.739,0.819,0.143,0.919), ncol=5))
+colnames(mtb_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#metabolite only radar chart:
+mtb_dat <- rbind(rep(1,5) , rep(0,5) , mtb_dat)
+mtb_rad <- radarchart(mtb_dat, axistype = 1, pcol=rgb(0,0.1,0.8,0.9), pfcol= rgb(0,0.1,0.8,0.6),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+
+#both microbe and metabolite data models:
+both_dat <- as.data.frame(matrix(c(0.919, 0.723,0.809,0.071,0.918), ncol=5))
+colnames(both_dat) <- c("Recall", "Precision","F1 Score","Specificity", "Sensitivity")
+
+#microbe and metabolite both radar chart:
+both_dat <- rbind(rep(1,5) , rep(0,5) , both_dat)
+both_rad <- radarchart(both_dat, axistype = 1, pcol=rgb(0.5,0.1,0.8,0.9), pfcol= rgb(0.5,0.1,0.8,0.6),
+           plwd=2,
+           cglcol="grey", cglty=1, axislabcol="red", cglwd=0.8, vlcex=0.8, calcex = 0.8)
+```
+
+#MICOM significant flux changes diagram:
+```{r}
+#order by the most negative to most positive change:
+mtb_changes <- as.data.frame(mtb_changes)
+mtb_changes$metabolite <- factor(mtb_changes$metabolite, levels = c("Malate", "L-asparagine", "L-aspartate", "Acetate", "Fumarate","2-deoxyadenosine", "L-proline"))
+mycolors <- c( "#6C5B7B", "#355C7D","#F8B195", "#F67280", "#C06C84", "yellow", "green")
+
+#plot changes:
+ggplot(data = mtb_changes[1:7,], aes(x = metabolite, y = statistic)) +
+  geom_col(aes(fill= mycolors), show.legend = F)+
+  scale_fill_manual(values= mycolors)+
+  labs(x = "Metabolite", y = "log-fold change")+
+  theme_minimal()+
+  theme(axis.title.x = element_text(size = 15,margin = margin(t = 10)),
+        axis.text.x = element_text(size =12, angle = 45,
+                                   vjust = 0.6),
+        axis.title.y = element_text(size = 15, margin = margin(r = 20)))
+
+#save figure:
+#ggsave(path = "figs", filename = "mtb_genus_change.png", height = 5)
+```
+
+#Metabolite classification flux differences among groups:
+```{r}
+#select those selected metabolites only from the data:
+sel_mets <- unlist(sel_met[1:43,4])
+mtb_selly <- met_diff[,c(sel_mets)]
+class <- as.vector(t(sel_met[1:43,5]))
+mtb_selly <- rbind(mtb_selly,class)
+
+#store slected metabolites:
+#write.csv(mtb_selly, "mtb_diag.csv", row.names = TRUE)
+
+#reload data and reorganize:
+mtb_diag <- read_excel("mtb_diag.xlsx")
+mtb_diag <- as.data.frame(mtb_diag)
+rownames(mtb_diag) <- mtb_diag[,1] 
+mtb_diag <- mtb_diag[,-1]
+#group by disease group:
+Group <- as.vector(metadata_diff$Disease.Group)
+mtb_diag <- cbind(mtb_diag, Group)
+
+```
+
+Create diagram:
+```{r}
+#group by metabolite group:
+df.m <- melt(mtb_diag, id.var = "Group")
+df.m$variable <- factor(df.m$variable, levels = c("Cyanogenic glycosides (n=1)", "Dipeptides (n=2)", "Oligopeptides (n=1)", "Aspartic acid and derivatives (n=1)", "Amino acids, peptides, and analogues (n=4)", "Bile acids and derivatives (n=2)", "Hippuric acids (n=1)", "Pteridines and derivatives (n=1)", "Hemiacetals (n=1)", "Monothioacetals (n=1)", "Dihydrothiophenes (n=1)", "Tetrapyrroles and derivatives (n=1)", "Triterpenoids (n=1)", "Flavonoids (n=1)", "Quinone and hydroquinone lipids (n=1)", "Coumarans (n =1)", "Phosphatidylcholines (n=1)", "1,3-diacylglycerols (n=1)", "1-(1Z-alkenyl)-glycero-3-phosphocholines (n=1)", "Sphingolipids (n=2)", "1-acyl-sn-glycero-3-phosphocholines (n=1)","Fatty acyl glycosides of mono- and disaccharides (n=1)", "Long-chain fatty acids (n=2)", "Hydroxyeicosapolyenoic acids (n =1)", "Long-chain fatty alcohols (n=1)", "Xenobiotics (n=6)"))
+require(ggplot2)
+p <- 0
+p <- ggplot(data = df.m, aes(y=variable, x=log(value))) + 
+             geom_boxplot(aes(fill=Group))
+p <- p + xlab("log(PPM)") + ylab("Chemical Class")
+p <- p + theme(legend.text = element_text(size = 12),
+          legend.title = element_text(size = 13),
+          axis.title=element_text(size=14))
+p
+
+#save plot:
+ggsave(file="mtb_class_group.pdf", height = 8, width =8, dpi=300)
+```
+
