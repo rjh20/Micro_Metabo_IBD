@@ -26,7 +26,7 @@ library(tableone)
 
 # Load the data:
 ```{r}
-data <- load("fransoza_IBD") #main dataset
+data <- load("franzosa_IBD") #main dataset
 genus_names <- read_excel('genus_names.xlsx') #genus names dataset
 ```
 
