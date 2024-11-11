@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 install.packages('readxl')
 install.packages("vegan")
 install.packages("fmsb")
+install.packages("pheatmap")
 ```
 
 #Load required libraries:
@@ -26,6 +27,7 @@ library(tableone)
 library(fmsb)
 library(reshape2)
 library(ggplot2)
+library(pheatmap)
 ```
 
 # Load the data:
@@ -35,6 +37,8 @@ genus_names <- read_excel('genus_names.xlsx') #genus names dataset
 mtb_changes <- read_excel('tests.xlsx') #metabolite fluxes from MICOM
 sel_met <- read_excel("selected_met.xlsx") #information on the selected metabolites only
 met_diff <- read_excel("fran_met.xlsx")
+mtb_diff <- read_excel("fran_mtb_val.xlsx")
+gen_diff <- read_excel("fran_genera_diff_vis.xlsx")
 ```
 
 #Compare phyla among groups:
@@ -420,4 +424,73 @@ p
 #save plot:
 ggsave(file="mtb_class_group.pdf", height = 8, width =8, dpi=300)
 ```
+#Heatmaps of selected microbes and metabolites:
 
+Format the required data:
+```{r}
+#Extract Disease Group:
+`Disease Group` <- gen_diff$Disease.Group
+#Make the samples the row names and remove that column and the disease group column:
+gen_diff <- as.data.frame(gen_diff)
+rownames(gen_diff) <- gen_diff[,1]
+gen_diff <- gen_diff[,-c(1,76)]
+
+#Make samples the row names and remove that column:
+mtb_diff <- as.data.frame(mtb_diff)
+rownames(mtb_diff) <- mtb_diff[,1]
+mtb_diff <- mtb_diff[,-1]
+
+#Create a Dataframe of the disease group labels to add as an annotation on the heatmap:
+dis_stat_df <- as.data.frame(`Disease Group`)
+rownames(dis_stat_df) <- rownames(gen_diff)
+```
+
+This is a function to allow easy saving of the heatmap figure as a pdf:
+```{r}
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width=width, height=height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+```
+
+Microbe Heatmap:
+```{r}
+#PHeatmap requires the data to be in a matrix:
+gen_diff_mat <- data.matrix(gen_diff)
+#Log the values as used in the model:
+log_gen_diff <- log(gen_diff_mat+0.0001)
+
+#Create Heatmap:
+ph <- pheatmap(log_gen_diff, 
+               annotation_row = dis_stat_df, #Show disease group of each sample
+               cellwidth = 10, cellheight = 10, #change the cell size so the text 
+               #does not overlap
+               #increase the legend text size, while the other remains the same:
+               fontsize_row = 10, fontsize_col = 10, fontsize = 15, 
+               #alter the numbers on the legend:
+               legend_breaks = c(-9, -7, -5, -3, -1, 0))
+
+#Save Heatmap as a pdf:
+#save_pheatmap_pdf(ph, "micro_heat.pdf", width = 17, height =33)
+```
+
+Metabolite Heatmap:
+```{r}
+#Make a matrix:
+met_diff_mat <- data.matrix(mtb_diff)
+#Log as input in the model:
+log_met_diff <- log(mtb_diff+1)
+
+#Create Heatmap:
+ph_mtb <- pheatmap(log_met_diff, 
+                   annotation_row = dis_stat_df, 
+                   cellwidth = 10, cellheight = 10, 
+                   fontsize = 13, fontsize_row = 10, fontsize_col = 10)
+
+#Save heatmap as pdf:
+#save_pheatmap_pdf(ph_mtb, "mtb_heat.pdf", width = 10, height = 35)
+```
