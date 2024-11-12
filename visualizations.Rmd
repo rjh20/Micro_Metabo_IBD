@@ -14,6 +14,7 @@ install.packages('readxl')
 install.packages("vegan")
 install.packages("fmsb")
 install.packages("pheatmap")
+install.packages("qgraph")
 ```
 
 #Load required libraries:
@@ -28,6 +29,8 @@ library(fmsb)
 library(reshape2)
 library(ggplot2)
 library(pheatmap)
+library(qgraph)
+library(ggcorrplot)
 ```
 
 # Load the data:
@@ -39,6 +42,18 @@ sel_met <- read_excel("selected_met.xlsx") #information on the selected metaboli
 met_diff <- read_excel("fran_met.xlsx")
 mtb_diff <- read_excel("fran_mtb_val.xlsx")
 gen_diff <- read_excel("fran_genera_diff_vis.xlsx")
+```
+#Some data formatting:
+```{r}
+#Make the samples the row names and remove that column and the disease group column:
+gen_diff <- as.data.frame(gen_diff)
+rownames(gen_diff) <- gen_diff[,1]
+gen_diff <- gen_diff[,-c(1,76)]
+
+#Make samples the row names and remove that column:
+mtb_diff <- as.data.frame(mtb_diff)
+rownames(mtb_diff) <- mtb_diff[,1]
+mtb_diff <- mtb_diff[,-1]
 ```
 
 #Compare phyla among groups:
@@ -430,15 +445,6 @@ Format the required data:
 ```{r}
 #Extract Disease Group:
 `Disease Group` <- gen_diff$Disease.Group
-#Make the samples the row names and remove that column and the disease group column:
-gen_diff <- as.data.frame(gen_diff)
-rownames(gen_diff) <- gen_diff[,1]
-gen_diff <- gen_diff[,-c(1,76)]
-
-#Make samples the row names and remove that column:
-mtb_diff <- as.data.frame(mtb_diff)
-rownames(mtb_diff) <- mtb_diff[,1]
-mtb_diff <- mtb_diff[,-1]
 
 #Create a Dataframe of the disease group labels to add as an annotation on the heatmap:
 dis_stat_df <- as.data.frame(`Disease Group`)
@@ -493,4 +499,33 @@ ph_mtb <- pheatmap(log_met_diff,
 
 #Save heatmap as pdf:
 #save_pheatmap_pdf(ph_mtb, "mtb_heat.pdf", width = 10, height = 35)
+```
+#Correlation Diagrams:
+Data Formatting:
+```{r}
+#extract the 9 overlapping key microbe features only:
+imp_gen <- gen_diff[,c('CAJJNI01','CAJOIG01','Flavonifractor','JAGTTR01','RGIG426','RUG762','UBA11774','UBA1774','Ventricola')]
+
+#combine the two dataframes:
+both_fet <-cbind(imp_gen, mtb_diff)
+```
+
+Graph Diagram:
+```{r}
+pdf("qgraph_plot.pdf", width = 8, height = 6) #create pdf to save diagram
+#create graph diagram:
+qgraph(cor(both_fet),
+       layout = "spring", #organisational choice
+       legend = F,
+       graph = "pcor") #use partial correlation
+dev.off()
+```
+
+Correlation Grid:
+```{r}
+#create diagram to show correlation between each microbe and metabolite
+ggcorrplot(cor(both_fet), legend.title = "Correlation", hc.order = TRUE) #cluster the microbes and metabolites and order them based on this
+
+#Save the diagram:
+#ggsave(file="corr_map.pdf", height = 5, width =5, dpi=300)
 ```
