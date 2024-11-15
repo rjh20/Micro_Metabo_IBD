@@ -45,9 +45,11 @@ gen_diff <- read_excel("fran_genera_diff_vis.xlsx")
 ```
 #Some data formatting:
 ```{r}
-#Make the samples the row names and remove that column and the disease group column:
 gen_diff <- as.data.frame(gen_diff)
 rownames(gen_diff) <- gen_diff[,1]
+#Extract Disease Group:
+`Disease Group` <- gen_diff$Disease.Group
+#Remove the sample and disease group columns:
 gen_diff <- gen_diff[,-c(1,76)]
 
 #Make samples the row names and remove that column:
@@ -443,9 +445,6 @@ ggsave(file="mtb_class_group.pdf", height = 8, width =8, dpi=300)
 
 Format the required data:
 ```{r}
-#Extract Disease Group:
-`Disease Group` <- gen_diff$Disease.Group
-
 #Create a Dataframe of the disease group labels to add as an annotation on the heatmap:
 dis_stat_df <- as.data.frame(`Disease Group`)
 rownames(dis_stat_df) <- rownames(gen_diff)
