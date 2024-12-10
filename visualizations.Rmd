@@ -485,6 +485,8 @@ ph <- pheatmap(log_gen_diff,
 
 Metabolite Heatmap:
 ```{r}
+#Rename column for easier viewing:
+names(mtb_diff)[12] <- 'Tetrahydro-carboxylic acid*'
 #Make a matrix:
 met_diff_mat <- data.matrix(mtb_diff)
 #Log as input in the model:
